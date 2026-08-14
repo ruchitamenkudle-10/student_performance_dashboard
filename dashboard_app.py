@@ -22,12 +22,35 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------------------------------
-# First-boot safeguard — on a fresh deploy (e.g. Streamlit Community Cloud),
-# model_assets.pkl / processed_students.csv won't exist yet because they're
-# build artifacts, not committed to the repo. Train once, automatically,
-# instead of crashing with a FileNotFoundError.
+# First-boot / stale-artifact safeguard.
+#
+# model_assets.pkl / processed_students.csv are build artifacts, not
+# committed to the repo (see .gitignore), so on a genuinely fresh deploy they
+# simply won't exist yet -- train once, automatically, instead of crashing
+# with a FileNotFoundError.
+#
+# They can also exist but be STALE: if a previous deploy generated them with
+# an older version of train_model.py (different columns, different dtypes),
+# a later code push can expect a schema those old files don't have. Checking
+# existence alone would silently reuse the incompatible file and crash deep
+# inside app logic with a confusing TypeError. So we also stamp a
+# SCHEMA_VERSION into model_assets.pkl and retrain whenever it doesn't match
+# what this version of the code expects.
 # ----------------------------------------------------------------------------
-if not (os.path.exists("model_assets.pkl") and os.path.exists("processed_students.csv")):
+EXPECTED_SCHEMA_VERSION = 2
+
+
+def _artifacts_are_fresh():
+    if not (os.path.exists("model_assets.pkl") and os.path.exists("processed_students.csv")):
+        return False
+    try:
+        saved_version = joblib.load("model_assets.pkl").get("schema_version")
+    except Exception:
+        return False
+    return saved_version == EXPECTED_SCHEMA_VERSION
+
+
+if not _artifacts_are_fresh():
     with st.spinner("First-time setup: training the model (this only happens once)…"):
         import train_model
         train_model.main()
@@ -532,7 +555,10 @@ def get_recommendations(row, top_n=3):
     """Return up to top_n prioritized recommendations for a single student row."""
     gaps = []
     for feat, rule in RECOMMENDATION_RULES.items():
-        val = row[feat]
+        try:
+            val = float(row[feat])
+        except (TypeError, ValueError):
+            continue  # unexpected/non-numeric value for this feature — skip it, don't crash the page
         importance = FEATURE_IMPORTANCE.get(feat, 0)
         triggered, severity = False, 0.0
         if rule["direction"] == "min" and val < rule["threshold"]:
@@ -546,7 +572,7 @@ def get_recommendations(row, top_n=3):
             severity = 1.0
         if triggered:
             gaps.append({
-                "feature": feat, "tip": rule["tip"], "value": val,
+                "feature": feat, "tip": rule["tip"], "value": row[feat],
                 "unit": rule.get("unit", ""),
                 "score": importance * (0.4 + severity),
             })
@@ -558,7 +584,10 @@ def get_strengths(row, top_n=2):
     """Return the student's top well-performing factors (inverse of gaps)."""
     strengths = []
     for feat, rule in RECOMMENDATION_RULES.items():
-        val = row[feat]
+        try:
+            val = float(row[feat])
+        except (TypeError, ValueError):
+            continue  # unexpected/non-numeric value for this feature — skip it, don't crash the page
         importance = FEATURE_IMPORTANCE.get(feat, 0)
         is_strong = False
         if rule["direction"] == "min" and val >= rule["threshold"]:
@@ -568,7 +597,7 @@ def get_strengths(row, top_n=2):
         elif rule["direction"] == "eq" and val == rule["target"]:
             is_strong = True
         if is_strong:
-            strengths.append({"feature": feat, "value": val, "score": importance})
+            strengths.append({"feature": feat, "value": row[feat], "score": importance})
     strengths.sort(key=lambda s: s["score"], reverse=True)
     return strengths[:top_n]
 

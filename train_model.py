@@ -15,6 +15,14 @@ from sklearn.metrics import accuracy_score
 
 RANDOM_STATE = 42
 
+# Bump this whenever FEATURE_COLS, the recommendation engine's expected
+# columns, or anything else about model_assets.pkl / processed_students.csv's
+# shape changes. The dashboard checks this on startup and retrains if the
+# artifacts on disk were built by an older, incompatible version of this
+# script (e.g. a stale file left over from a previous deploy on Streamlit
+# Cloud) instead of silently trying to use a mismatched schema.
+SCHEMA_VERSION = 2
+
 FEATURE_COLS = [
     'StudyHours', 'Attendance', 'Resources', 'Extracurricular', 'Motivation',
     'Internet', 'Gender', 'Age', 'LearningStyle', 'OnlineCourses', 'Discussions',
@@ -89,6 +97,7 @@ def main():
     df.to_csv('processed_students.csv', index=False)
 
     assets = {
+        'schema_version': SCHEMA_VERSION,
         'classifier': clf,
         'regressor': reg,
         'feature_cols': FEATURE_COLS,
