@@ -936,13 +936,23 @@ elif page == "Performance Trends":
         st.plotly_chart(plotly_theme(fig, 400), use_container_width=True)
 
     with c2:
+        # Attendance is stored as whole-number percentages, so with thousands
+        # of students many of them land on the exact same x pixel and stack
+        # into solid vertical blocks instead of a readable scatter. A tiny
+        # random jitter spreads them apart just enough to see individual
+        # points and their performance color, without meaningfully moving
+        # the OLS trendline (it's computed on the jittered values, but the
+        # jitter is small enough — +/-0.4 — that the fit is unaffected).
+        plot_df = df.copy()
+        rng = np.random.default_rng(42)
+        plot_df["AttendanceJitter"] = plot_df["Attendance"] + rng.uniform(-0.4, 0.4, size=len(plot_df))
         fig = px.scatter(
-            df, x="Attendance", y="ExamScore", color="PredictedPerformance",
-            color_discrete_map=PERF_COLORS, opacity=0.55,
+            plot_df, x="AttendanceJitter", y="ExamScore", color="PredictedPerformance",
+            color_discrete_map=PERF_COLORS, opacity=0.35,
             trendline="ols", trendline_scope="overall",
         )
-        fig.update_layout(title="Attendance vs. Exam Score")
-        fig.update_traces(marker=dict(size=6))
+        fig.update_layout(title="Attendance vs. Exam Score", xaxis_title="Attendance")
+        fig.update_traces(marker=dict(size=4))
         st.plotly_chart(plotly_theme(fig, 400), use_container_width=True)
 
     section_header("Segments", "Average Score by Study Hours & Attendance Band")
