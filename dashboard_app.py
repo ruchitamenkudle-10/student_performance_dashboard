@@ -947,11 +947,24 @@ elif page == "Performance Trends":
 
     section_header("Segments", "Average Score by Study Hours & Attendance Band")
     df_binned = df.copy()
-    df_binned['StudyBand'] = pd.cut(df_binned['StudyHours'], bins=4)
-    df_binned['AttendBand'] = pd.cut(df_binned['Attendance'], bins=4)
-    pivot = df_binned.pivot_table(values='ExamScore', index='StudyBand', columns='AttendBand', aggfunc='mean')
-    pivot.index = [f"{int(i.left)}–{int(i.right)}h" for i in pivot.index]
-    pivot.columns = [f"{int(c.left)}–{int(c.right)}%" for c in pivot.columns]
+    # qcut (quantile bins) instead of cut (equal-width bins): equal-width bins can
+    # land on stretches of the range with zero students (e.g. very few students
+    # attend 60-75%), and pivot_table silently drops those empty columns/rows —
+    # that's what was collapsing the grid from 4x4 down to a lopsided 4x2 and
+    # warping the 3D surface. Quantile bins guarantee every band has students in it.
+    df_binned['StudyBand'] = pd.qcut(df_binned['StudyHours'], q=4, duplicates='drop')
+    df_binned['AttendBand'] = pd.qcut(df_binned['Attendance'], q=4, duplicates='drop')
+    pivot = df_binned.pivot_table(values='ExamScore', index='StudyBand', columns='AttendBand',
+                                   aggfunc='mean', observed=False)
+    # Keep the grid complete even if a cell still has no data (NaN), rather than
+    # dropping rows/columns, so the heatmap/surface always stay a proper rectangle.
+    pivot = pivot.reindex(index=df_binned['StudyBand'].cat.categories,
+                           columns=df_binned['AttendBand'].cat.categories)
+    # Fill any still-empty cells by interpolating across neighbors so the 3D
+    # surface has no holes to fold through.
+    pivot = pivot.interpolate(axis=0, limit_direction='both').interpolate(axis=1, limit_direction='both')
+    pivot.index = [f"{i.left:.0f}–{i.right:.0f}h" for i in pivot.index]
+    pivot.columns = [f"{c.left:.0f}–{c.right:.0f}%" for c in pivot.columns]
 
     fig = go.Figure(go.Heatmap(
         z=pivot.values, x=pivot.columns, y=pivot.index,
@@ -986,18 +999,47 @@ elif page == "Performance Trends":
     st.plotly_chart(plotly_theme(fig3d_surface, 520), use_container_width=True)
 
     section_header("Factors", "Motivation & Stress Effects")
+
+    def decode_level(series, code_map={0: 'Low', 1: 'Medium', 2: 'High'}):
+        """
+        Turn a Low/Medium/High-style column into clean labels, regardless of
+        how it's actually encoded in processed_students.csv.
+
+        This column was silently producing all-NaN bars because `.map({0:..})`
+        only matches an exact 0/1/2 int. If the column is already text labels,
+        a float encoding (0.0/1.0/2.0), or a continuous score, a plain int map
+        returns NaN for every row and the bars vanish. This handles all of those.
+        """
+        s = series
+        # Case 1: already text labels (e.g. "Low"/"Medium"/"High") — just
+        # normalize casing and use as-is. Checked via is_numeric_dtype rather
+        # than `dtype == object`, since pandas can store text as a dedicated
+        # "str" dtype (not classic object) depending on version/settings.
+        if not pd.api.types.is_numeric_dtype(s):
+            normalized = s.astype(str).str.strip().str.title()
+            if normalized.isin(list(code_map.values())).mean() > 0.5:
+                return normalized
+        # Case 2: numeric — could be exact int codes, float codes (0.0/1.0/2.0),
+        # or a wider continuous scale. Round to nearest int code if it's close
+        # to 0/1/2; otherwise bucket the continuous range into 3 equal groups.
+        numeric = pd.to_numeric(s, errors='coerce')
+        rounded = numeric.round()
+        if rounded.isin(code_map.keys()).mean() > 0.5:
+            return rounded.map(code_map)
+        return pd.qcut(numeric, q=3, labels=['Low', 'Medium', 'High'], duplicates='drop')
+
     c3, c4 = st.columns(2)
     with c3:
         tmp = df.copy()
-        tmp['MotivationLabel'] = tmp['Motivation'].map({0: 'Low', 1: 'Medium', 2: 'High'})
-        avg = tmp.groupby('MotivationLabel')['ExamScore'].mean().reindex(['Low', 'Medium', 'High'])
+        tmp['MotivationLabel'] = decode_level(tmp['Motivation'])
+        avg = tmp.groupby('MotivationLabel', observed=True)['ExamScore'].mean().reindex(['Low', 'Medium', 'High'])
         fig = go.Figure(go.Bar(x=avg.index, y=avg.values, marker_color=GOLD,
                                text=[f"{v:.1f}" for v in avg.values], textposition="outside"))
         fig.update_layout(title="Avg Exam Score by Motivation")
         st.plotly_chart(plotly_theme(fig, 340), use_container_width=True)
     with c4:
-        tmp['StressLabel'] = tmp['StressLevel'].map({0: 'Low', 1: 'Medium', 2: 'High'})
-        avg2 = tmp.groupby('StressLabel')['ExamScore'].mean().reindex(['Low', 'Medium', 'High'])
+        tmp['StressLabel'] = decode_level(tmp['StressLevel'])
+        avg2 = tmp.groupby('StressLabel', observed=True)['ExamScore'].mean().reindex(['Low', 'Medium', 'High'])
         fig = go.Figure(go.Bar(x=avg2.index, y=avg2.values, marker_color=RUST,
                                text=[f"{v:.1f}" for v in avg2.values], textposition="outside"))
         fig.update_layout(title="Avg Exam Score by Stress Level")
